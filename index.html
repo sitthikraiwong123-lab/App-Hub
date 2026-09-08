@@ -3726,7 +3726,10 @@ async function deleteEntry(){
   }
 }
 function tombstoneMatch(pe,t){
-  if(t.sid && pe.sid && t.sid===pe.sid) return true;
+  const ps=String((pe&&pe.sid)||"").trim();
+  const ts=String((t&&t.sid)||"").trim();
+  // ถ้าฝั่งใดมี SID ให้จับคู่ด้วย SID เท่านั้น ป้องกันซ่อนคนละรายการที่วัน/Doc/ยอดตรงกัน
+  if(ps||ts) return !!ps && !!ts && ps===ts;
   const ek=`${pe.date}|${String(pe.docNo||"").trim()}|${Math.round((parseFloat(pe.amount)||0)*100)}`;
   const tk=`${t.date}|${String(t.docNo||"").trim()}|${Math.round((parseFloat(t.amount)||0)*100)}`;
   return ek===tk;
@@ -4416,8 +4419,28 @@ async function buildExportItems(m, opts){
       const driveOnlyImgs=df.filter(f=>f.kind==="taximg" && !driveImgNames.has(f.name));
       for(let di=0; di<driveOnlyImgs.length; di++){ const f=driveOnlyImgs[di];
         try{ const isrc=await gsFetchFile(f.fileId); if(isrc) await emit({kind:"image", src:isrc, tag:`#${idx+1} ใบกำกับภาษี (รูป Drive)`}); }catch(e){ console.error(e); } }
-      const pdfs=en.taxPdfs||[];
-      for(const p of pdfs){ const psrc=await getSrc(p.src,"taxpdf",p.name); if(psrc) await emit({kind:"pdf", src:psrc, name:p.name, rendered:[], tag:`#${idx+1} ใบกำกับภาษี (PDF)`}); }
+      // PDF จากอุปกรณ์เดิม + PDF ที่มีเฉพาะบน Drive
+      const localPdfs=Array.isArray(en.taxPdfs)?en.taxPdfs:[];
+      const drivePdfs=df.filter(f=>f.kind==="taxpdf");
+      const usedIds=new Set(), usedNames=new Set();
+      for(const p of localPdfs){
+        if(!p) continue;
+        const name=String(p.name||"attachment.pdf");
+        const d=drivePdfs.find(f=>f.name===name);
+        let psrc=p.src||null;
+        if(!psrc&&d&&d.fileId) try{ psrc=await gsFetchFile(d.fileId); usedIds.add(d.fileId); }catch(err){ console.error("PDF load",err); }
+        if(psrc){ usedNames.add(name); await emit({kind:"pdf",src:psrc,name,rendered:[],tag:`#${idx+1} ใบกำกับภาษี (PDF)`}); }
+      }
+      for(const d of drivePdfs){
+        if(!d.fileId||usedIds.has(d.fileId)||(d.name&&usedNames.has(d.name))) continue;
+        try{
+          const psrc=await gsFetchFile(d.fileId);
+          usedIds.add(d.fileId); if(d.name) usedNames.add(d.name);
+          await emit({kind:"pdf",src:psrc,name:d.name||"attachment.pdf",rendered:[],tag:`#${idx+1} ใบกำกับภาษี (PDF จาก Drive)`});
+        }catch(err){
+          await emit({kind:"error",name:d.name||"attachment.pdf",message:err&&err.message?err.message:String(err),tag:`#${idx+1} PDF ดึงไม่สำเร็จ`});
+        }
+      }
     }
   }
   return items;
@@ -4464,6 +4487,9 @@ function renderExportPreview(){
   exportItems.forEach(it=>{
     if(it.kind==="html"){ html+=`<div class="pg-port" id="pgb_${bi++}">${it.tag?`<span class="pg-tag">${esc(it.tag)}</span>`:""}${it.html}</div>`; }
     else if(it.kind==="image"){ html+=`<div class="pg-port" id="pgb_${bi++}"><span class="pg-tag">${esc(it.tag)}</span><img class="full" src="${it.src}"></div>`; }
+    else if(it.kind==="error"){
+      html+=`<div class="pg-port" id="pgb_${bi++}" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:40px;color:#a8151f;text-align:center"><span class="pg-tag">${esc(it.tag||"PDF Error")}</span><div style="font-size:42px">⚠️</div><div style="font-size:15px;font-weight:700">${esc(it.name||"PDF")}</div><div style="font-size:12px;color:#666">${esc(it.message||"ไม่สามารถดึงไฟล์จาก Google Drive ได้")}</div></div>`;
+    }
     else if(it.kind==="pdf"){
       if(it.rendered.length){ it.rendered.forEach((img,j)=> html+=`<div class="pg-port" id="pgb_${bi++}"><span class="pg-tag">${esc(it.tag)} ${it.rendered.length>1?(j+1)+"/"+it.rendered.length:""}</span><img class="full" src="${img}"></div>`); }
       else { html+=`<div class="pg-port" id="pgb_${bi++}" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:#555"><span class="pg-tag">${esc(it.tag)}</span><div style="font-size:40px">📄</div><div style="font-size:14px;font-weight:700">${esc(it.name||"PDF")}</div><div style="font-size:12px;color:#888;text-align:center;padding:0 30px">ไฟล์ PDF จะถูกแนบจริง (vector) ตอนกดดาวน์โหลด .pdf</div></div>`; }
@@ -4478,6 +4504,8 @@ function scaleExportPages(){
 function closeExport(){ document.getElementById("exportModal").classList.remove("open"); }
 
 async function buildPdfBlob(){
+    const failed=exportItems.filter(it=>it.kind==="error");
+    if(failed.length) throw new Error("ดึงไฟล์แนบไม่สำเร็จ: "+failed.map(it=>it.name||"ไม่ทราบชื่อไฟล์").join(", "));
     const { PDFDocument }=PDFLib; const out=await PDFDocument.create(); const A4=[595.28,841.89];
     let bi=0;
     for(const it of exportItems){
@@ -4866,10 +4894,18 @@ async function gsPushUploadNow(){
 }
 const _fileCache=new Map();   // cache ไฟล์จาก Drive ต่อ session -> เปิด preview ครั้งถัดไปเร็วทันที
 async function gsFetchFile(fileId){
+  if(!fileId) throw new Error("ไม่พบ File ID");
   if(_fileCache.has(fileId)) return _fileCache.get(fileId);
-  const d=await jsonp({action:"getfile", id:fileId, t:Date.now()}); if(!d||!d.ok||!d.b64) throw new Error("ดึงไฟล์จาก Drive ไม่ได้");
-  const durl="data:"+(d.mime||"application/octet-stream")+";base64,"+d.b64;
-  _fileCache.set(fileId,durl); return durl;
+  const d=await jsonp({action:"getfile",id:fileId,t:Date.now()});
+  if(!d) throw new Error("ไม่ได้รับคำตอบจาก Backend");
+  if(!d.ok) throw new Error(d.error||"Backend ดึงไฟล์ไม่ได้");
+  if(!d.b64) throw new Error(`ไฟล์ ${d.name||fileId} ไม่มีข้อมูล`);
+  const mime=String(d.mime||"application/octet-stream").toLowerCase();
+  const allowed=new Set(["application/pdf","image/jpeg","image/png","image/webp","application/json"]);
+  if(!allowed.has(mime)) throw new Error("ไม่รองรับชนิดไฟล์: "+mime);
+  const durl=`data:${mime};base64,${d.b64}`;
+  _fileCache.set(fileId,durl);
+  return durl;
 }
 let _upPullTimer=null;
 async function gsDeleteDriveFile(fileId, month, key, kind, name){
@@ -16297,8 +16333,7 @@ body{
       <!-- Form Type -->
       <div class="section-title">Form Type</div>
       <div class="type-scroll" id="typeTabs">
-        <button class="type-tab active" data-type="Other" onclick="setFormType(this)">Other</button>
-        <button class="type-tab" data-type="traveling expenses local" onclick="setFormType(this)">Traveling Local</button>
+        <button class="type-tab active" data-type="traveling expenses local" onclick="setFormType(this)">Traveling Local</button>
         <button class="type-tab" data-type="Entertainment Expense" onclick="setFormType(this)">Entertainment</button>
         <button class="type-tab" data-type="Travelling Expense Local" onclick="setFormType(this)">Travelling Expense</button>
       </div>
@@ -16445,7 +16480,7 @@ const LOGO = "data:image/png;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJ
 const NK   = "sap_v5_names";
 const MIN_ROWS = 5;   // always show at least 5 lines
 
-let formTypeLabel = "Other";
+let formTypeLabel = "traveling expenses local";
 let exps = [];   // {id, desc, amt}
 let imgs = [];   // {id, src, x, y, w, h}
 let eid  = 0;
