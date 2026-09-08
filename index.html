@@ -727,7 +727,7 @@ table.led tr.after-total-row-2 td{
       <datalist id="descList"><option value="Gasoline"><option value="Easy pass"><option value="adjust coin"></datalist>
     </div></div>
     <div class="row two">
-      <div><label>Ref. Inv (เลขท้าย)</label><input id="emRef" placeholder="0035"></div>
+      <div><label>Ref. Inv (เลขท้าย)</label><input id="emRef" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="0035"></div>
       <div><label>Amount</label><input id="emAmt" type="number" inputmode="decimal" placeholder="0.00"></div>
     </div>
     <div class="row two">
@@ -1732,6 +1732,10 @@ $('pSave').addEventListener('click',async()=>{
   await saveProfile();await saveMonths();$('profileModal').classList.remove('open');render();toast('บันทึกการตั้งค่าแล้ว');
 });
 
+function normalizeReceiptSuffix_(value){
+  const digits=String(value==null?'':value).replace(/\D/g,'').slice(0,4);
+  return digits?digits.padStart(4,'0'):'';
+}
 /* ---------------- Entry modal ---------------- */
 function openEntry(id){
   editingEntryId=id;
@@ -1742,7 +1746,7 @@ function openEntry(id){
     $('emTitle').textContent='เพิ่มรายการ';$('emDelete').style.display='none';}
   _emDraft=JSON.parse(JSON.stringify(e));_emDraft.receiptIds=_emDraft.receiptIds||[];
   $('emDate').value=e.date||'';$('emDoc').value=e.docNo||profile.docNo;$('emDesc').value=e.desc||'';
-  $('emRef').value=e.refInv||'';$('emCust').value=e.customer||'';
+  $('emRef').value=normalizeReceiptSuffix_(e.refInv);$('emCust').value=e.customer||'';
   $('emVendor').value=e.vendor||'';$('emAmt').value=e.amount||'';
   renderEmStrip();
   $('entryModal').classList.add('open');
@@ -1837,6 +1841,11 @@ async function storeReceipt(blob,name,w,h){
 function imgDims(blobOrFile){return new Promise((res,rej)=>{const u=URL.createObjectURL(blobOrFile);const im=new Image();
   im.onload=()=>{res({w:im.naturalWidth,h:im.naturalHeight});URL.revokeObjectURL(u);};im.onerror=()=>{URL.revokeObjectURL(u);rej(new Error('image'));};im.src=u;});}
 
+$('emRef').addEventListener('input',function(){
+  const clean=String(this.value||'').replace(/\D/g,'').slice(0,4);
+  if(this.value!==clean)this.value=clean;
+});
+$('emRef').addEventListener('blur',function(){this.value=normalizeReceiptSuffix_(this.value);});
 $('emCancel').addEventListener('click',()=>{$('entryModal').classList.remove('open');});
 $('emDelete').addEventListener('click',async()=>{
   if(!editingEntryId)return;
@@ -1848,7 +1857,7 @@ $('emDelete').addEventListener('click',async()=>{
 });
 $('emSave').addEventListener('click',async()=>{
   _emDraft.date=$('emDate').value;_emDraft.docNo=parseInt($('emDoc').value)||profile.docNo;_emDraft.desc=$('emDesc').value.trim();
-  _emDraft.refInv=$('emRef').value.trim();_emDraft.customer=$('emCust').value.trim();
+  _emDraft.refInv=normalizeReceiptSuffix_($('emRef').value);$('emRef').value=_emDraft.refInv;_emDraft.customer=$('emCust').value.trim();
   _emDraft.vendor=$('emVendor').value.trim();_emDraft.amount=parseFloat($('emAmt').value)||0;
   _emDraft.updatedAt=Date.now();
   if(editingEntryId){const i=cur.entries.findIndex(x=>x.id===editingEntryId);cur.entries[i]=_emDraft;}
